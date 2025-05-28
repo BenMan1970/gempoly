@@ -121,7 +121,6 @@ def get_data_polygon(symbol_pg: str, timespan_pg: str = 'hour', multiplier_pg: i
     except Exception as e:
         st.error(f"Erreur inattendue get_data_polygon pour {symbol_pg}: {type(e).__name__}"); st.exception(e); print(f"ERREUR INATTENDUE get_data_polygon {symbol_pg}:\n{traceback.format_exc()}"); return None
 
-# --- Fonction calculate_all_signals_pine (VERSION CORRECTEMENT INDENTÉE) ---
 def calculate_all_signals_pine(data):
     if data is None or len(data) < 60:
         print(f"calculate_all_signals: Données non fournies ou trop courtes ({len(data) if data is not None else 'None'} lignes).")
@@ -133,7 +132,7 @@ def calculate_all_signals_pine(data):
     close = data['Close']; high = data['High']; low = data['Low']; open_price = data['Open']
     ohlc4 = (open_price + high + low + close) / 4
     bull_confluences, bear_confluences, signal_details_pine = 0, 0, {}
-    try: # 1. HMA
+    try: 
         hma_series = hull_ma_pine(close, 20)
         if len(hma_series) >= 2 and not hma_series.iloc[-2:].isna().any():
             hma_val = hma_series.iloc[-1]; hma_prev = hma_series.iloc[-2]
@@ -142,7 +141,7 @@ def calculate_all_signals_pine(data):
             else: signal_details_pine['HMA'] = "─"
         else: signal_details_pine['HMA'] = "N/A"
     except Exception as e: signal_details_pine['HMA'] = "ErrHMA"; print(f"Erreur HMA: {e}")
-    try: # 2. RSI
+    try: 
         rsi_series = rsi_pine(ohlc4, 10)
         if len(rsi_series) >=1 and not pd.isna(rsi_series.iloc[-1]):
             rsi_val = rsi_series.iloc[-1]; signal_details_pine['RSI_val'] = f"{rsi_val:.0f}"
@@ -151,7 +150,7 @@ def calculate_all_signals_pine(data):
             else: signal_details_pine['RSI'] = f"─({rsi_val:.0f})"
         else: signal_details_pine['RSI'] = "N/A"
     except Exception as e: signal_details_pine['RSI'] = "ErrRSI"; signal_details_pine['RSI_val'] = "N/A"; print(f"Erreur RSI: {e}")
-    try: # 3. ADX
+    try: 
         adx_series = adx_pine(high, low, close, 14)
         if len(adx_series) >= 1 and not pd.isna(adx_series.iloc[-1]):
             adx_val = adx_series.iloc[-1]; signal_details_pine['ADX_val'] = f"{adx_val:.0f}"
@@ -159,7 +158,7 @@ def calculate_all_signals_pine(data):
             else: signal_details_pine['ADX'] = f"✖({adx_val:.0f})"
         else: signal_details_pine['ADX'] = "N/A"
     except Exception as e: signal_details_pine['ADX'] = "ErrADX"; signal_details_pine['ADX_val'] = "N/A"; print(f"Erreur ADX: {e}")
-    try: # 4. Heiken Ashi
+    try: 
         ha_open, ha_close = heiken_ashi_pine(data)
         if len(ha_open) >=1 and len(ha_close) >=1 and not pd.isna(ha_open.iloc[-1]) and not pd.isna(ha_close.iloc[-1]):
             if ha_close.iloc[-1] > ha_open.iloc[-1]: bull_confluences += 1; signal_details_pine['HA'] = "▲"
@@ -167,7 +166,7 @@ def calculate_all_signals_pine(data):
             else: signal_details_pine['HA'] = "─"
         else: signal_details_pine['HA'] = "N/A"
     except Exception as e: signal_details_pine['HA'] = "ErrHA"; print(f"Erreur HA: {e}")
-    try: # 5. Smoothed Heiken Ashi
+    try: 
         sha_open, sha_close = smoothed_heiken_ashi_pine(data, 10, 10)
         if len(sha_open) >=1 and len(sha_close) >=1 and not pd.isna(sha_open.iloc[-1]) and not pd.isna(sha_close.iloc[-1]):
             if sha_close.iloc[-1] > sha_open.iloc[-1]: bull_confluences += 1; signal_details_pine['SHA'] = "▲"
@@ -175,7 +174,7 @@ def calculate_all_signals_pine(data):
             else: signal_details_pine['SHA'] = "─"
         else: signal_details_pine['SHA'] = "N/A"
     except Exception as e: signal_details_pine['SHA'] = "ErrSHA"; print(f"Erreur SHA: {e}")
-    try: # 6. Ichimoku
+    try: 
         ichimoku_signal_val = ichimoku_pine_signal(high, low, close)
         if ichimoku_signal_val == 1: bull_confluences += 1; signal_details_pine['Ichi'] = "▲"
         elif ichimoku_signal_val == -1: bear_confluences += 1; signal_details_pine['Ichi'] = "▼"
@@ -188,10 +187,22 @@ def calculate_all_signals_pine(data):
     elif bull_confluences == bear_confluences and bull_confluences > 0: direction="CONFLIT"
     return{'confluence_P':confluence_value,'direction_P':direction,'bull_P':bull_confluences,'bear_P':bear_confluences,'rsi_P':signal_details_pine.get('RSI_val',"N/A"),'adx_P':signal_details_pine.get('ADX_val',"N/A"),'signals_P':signal_details_pine}
 
+# --- Fonction get_stars_pine (CORRIGÉE pour la syntaxe if/elif) ---
 def get_stars_pine(confluence_value):
-    if confluence_value == 6: return "⭐⭐⭐⭐⭐⭐"; elif confluence_value == 5: return "⭐⭐⭐⭐⭐"; 
-    elif confluence_value == 4: return "⭐⭐⭐⭐"; elif confluence_value == 3: return "⭐⭐⭐"; 
-    elif confluence_value == 2: return "⭐⭐"; elif confluence_value == 1: return "⭐"; else: return "WAIT"
+    if confluence_value == 6:
+        return "⭐⭐⭐⭐⭐⭐"
+    elif confluence_value == 5:
+        return "⭐⭐⭐⭐⭐"
+    elif confluence_value == 4:
+        return "⭐⭐⭐⭐"
+    elif confluence_value == 3:
+        return "⭐⭐⭐"
+    elif confluence_value == 2:
+        return "⭐⭐"
+    elif confluence_value == 1:
+        return "⭐"
+    else:
+        return "WAIT"
 
 col1,col2=st.columns([1,3])
 with col1:
