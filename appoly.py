@@ -1,87 +1,76 @@
 import streamlit as st
+import requests
 import pandas as pd
-import ta
-from polygon import RESTClient
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
-# Configuration de l'API Polygon
-API_KEY = "VOTRE_CLE_API_POLYGON"
-client = RESTClient(API_KEY)
+# Remplacez par votre clé API Polygon.io
+POLYGON_API_KEY = "YOUR_POLYGON_API_KEY_HERE"
 
-# Liste des paires Forex supportées par Polygon (format C:xxx)
+# Liste des paires Forex supportées par Polygon.io (exemple)
 FOREX_PAIRS = [
-    'C:EURUSD', 'C:GBPUSD', 'C:USDJPY', 'C:USDCHF',
-    'C:AUDUSD', 'C:USDCAD', 'C:NZDUSD', 'C:EURJPY'
+    "C:EURUSD", "C:USDJPY", "C:GBPUSD", "C:USDCHF", "C:USDCAD",
+    "C:AUDUSD", "C:NZDUSD", "C:XAUUSD", "C:USDSEK", "C:USDNOK", "C:USDZAR"
 ]
 
-# Fonction de récupération des données depuis Polygon
-@st.cache_data(ttl=300)
-def get_data_polygon(symbol, multiplier=1, timespan='hour', from_date='2024-05-01', to_date='2024-05-29'):
+def get_h1_data(pair, api_key):
+    url = f"https://api.polygon.io/v2/aggs/ticker/{pair}/range/1/hour/{(datetime.now(timezone.utc) - timedelta(hours=250)).date()}/{datetime.now(timezone.utc).date()}?adjusted=true&sort=desc&limit=250&apiKey={api_key}"
     try:
-        bars = client.get_aggs(
-            symbol=symbol,
-            multiplier=multiplier,
-            timespan=timespan,
-            from_=from_date,
-            to=to_date,
-            limit=500
-        )
-        df = pd.DataFrame([{
-            'Open': bar.o,
-            'High': bar.h,
-            'Low': bar.l,
-            'Close': bar.c,
-            'Volume': bar.v,
-            'Datetime': pd.to_datetime(bar.t, unit='ms')
-        } for bar in bars])
-
-        df.set_index('Datetime', inplace=True)
-        return df
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        results = data.get("results", [])
+        if not results:
+            return None
+        df = pd.DataFrame(results)
+        df["t"] = pd.to_datetime(df["t"], unit="ms")
+        df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close"})
+        df = df[["t", "open", "high", "low", "close"]]
+        return df[::-1].reset_index(drop=True)
     except Exception as e:
-        st.error(f"Erreur récupération Polygon pour {symbol} : {e}")
+        st.error(f"Erreur récupération {pair}: {e}")
         return None
 
-# Fonction pour calculer la confluence
 def calculate_confluence(df):
-    df['HMA'] = ta.trend.hull_moving_average(df['Close'], window=12)
-    df['EMA'] = ta.trend.ema_indicator(df['Close'], window=20)
-    df['ADX'] = ta.trend.adx(df['High'], df['Low'], df['Close'], window=14)
-    df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
-    df.dropna(inplace=True)
+    try:
+        df["ema_20"] = df["close"].ewm(span=20).mean()
+        df["ema_50"] = df["close"].ewm(span=50).mean()
+        df["signal"] = 0
+        df.loc[df["ema_20"] > df["ema_50"], "signal"] += 1
+        df.loc[df["close"] > df["ema_20"], "signal"] += 1
+        df.loc[df["close"] > df["ema_50"], "signal"] += 1
+        df["confluence"] = df["signal"]
+        return df.iloc[-1]["confluence"]
+    except Exception as e:
+        st.error(f"Erreur calcul confluence : {e}")
+        return 0
 
-    confluence = []
-    for i in range(len(df)):
-        signal = 0
-        if df['HMA'].iloc[i] > df['EMA'].iloc[i]:
-            signal += 1
-        if df['ADX'].iloc[i] > 20:
-            signal += 1
-        if df['RSI'].iloc[i] > 50:
-            signal += 1
+# Interface utilisateur
+st.set_page_config(page_title="Scanner Confluence Forex Premium (Polygon.io)", layout="wide")
+st.title("🔍 Scanner Confluence Forex Premium (Polygon.io)")
+st.markdown("_Version adaptée pour Polygon.io_")
 
-        if signal == 3:
-            confluence.append('⭐⭐⭐⭐⭐')
-        elif signal == 2:
-            confluence.append('⭐⭐⭐⭐')
-        elif signal == 1:
-            confluence.append('⭐⭐⭐')
-        else:
-            confluence.append('—')
+st.sidebar.header("🔧 Paramètres")
+min_conf = st.sidebar.selectbox("Confluence minimum (0-6)", list(range(7)), index=3)
+show_all = st.sidebar.checkbox("Voir toutes les paires (ignorer filtre confluence)", value=False)
 
-    df['Confluence'] = confluence
-    return df[['Close', 'Confluence']]
+results = []
 
-# Interface Streamlit
-st.title("Scanner Forex - Confluence 5⭐ et 6⭐ avec Polygon.io")
+with st.spinner("🔄 Scan en cours..."):
+    for pair in FOREX_PAIRS:
+        df = get_h1_data(pair, POLYGON_API_KEY)
+        if df is None:
+            continue
+        score = calculate_confluence(df)
+        if score >= min_conf or show_all:
+            results.append({
+                "Paire": pair.replace("C:", ""),
+                "Confluence H1": int(score)
+            })
 
-selected_pairs = st.multiselect("Choisissez les paires Forex à analyser :", FOREX_PAIRS, default=FOREX_PAIRS[:4])
+df_result = pd.DataFrame(results).sort_values(by="Confluence H1", ascending=False)
 
-if selected_pairs:
-    for pair in selected_pairs:
-        df = get_data_polygon(pair)
-        if df is not None:
-            df_result = calculate_confluence(df)
-            latest_signal = df_result.iloc[-1]['Confluence']
-            st.write(f"**{pair}** : Dernier signal = {latest_signal}")
-            st.line_chart(df_result['Close'])
-            st.dataframe(df_result.tail(5))
+if df_result.empty:
+    st.warning("Aucune paire ne correspond aux critères de confluence.")
+else:
+    st.success(f"{len(df_result)} paires trouvées.")
+    st.dataframe(df_result, use_container_width=True)
