@@ -2,75 +2,167 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime, timedelta, timezone
+import pytz
 
-# Remplacez par votre clé API Polygon.io
-POLYGON_API_KEY = "YOUR_POLYGON_API_KEY_HERE"
+# Configuration de l'application
+st.set_page_config(
+    page_title="Forex Scanner (Polygon.io)",
+    page_icon="💹",
+    layout="wide"
+)
 
-# Liste des paires Forex supportées par Polygon.io (exemple)
-FOREX_PAIRS = [
-    "C:EURUSD", "C:USDJPY", "C:GBPUSD", "C:USDCHF", "C:USDCAD",
-    "C:AUDUSD", "C:NZDUSD", "C:XAUUSD", "C:USDSEK", "C:USDNOK", "C:USDZAR"
-]
+# Titre et description
+st.title("📊 Forex Scanner avec Polygon.io")
+st.markdown("""
+Analyse des principales paires Forex utilisant les données de Polygon.io  
+*Fonctionne avec les plans Basic (gratuits)*
+""")
 
-def get_h1_data(pair, api_key):
-    url = f"https://api.polygon.io/v2/aggs/ticker/{pair}/range/1/hour/{(datetime.now(timezone.utc) - timedelta(hours=250)).date()}/{datetime.now(timezone.utc).date()}?adjusted=true&sort=desc&limit=250&apiKey={api_key}"
+# Initialisation des secrets
+if 'POLYGON_API_KEY' not in st.session_state:
+    st.session_state.POLYGON_API_KEY = None
+
+# Sidebar pour la configuration
+with st.sidebar:
+    st.header("🔧 Configuration")
+    api_key = st.text_input("Entrez votre clé Polygon.io", type="password")
+    if api_key:
+        st.session_state.POLYGON_API_KEY = api_key
+        st.success("Clé API configurée!")
+    
+    st.markdown("---")
+    st.markdown("""
+    ### Comment obtenir une clé API ?
+    1. Créez un compte sur [polygon.io](https://polygon.io)
+    2. Trouvez votre clé dans le dashboard
+    3. Les plans gratuits ont des limites
+    """)
+
+# Liste des paires Forex avec les codes Polygon
+FOREX_PAIRS = {
+    "EUR/USD": "C:EURUSD",
+    "USD/JPY": "C:USDJPY", 
+    "GBP/USD": "C:GBPUSD",
+    "USD/CHF": "C:USDCHF",
+    "USD/CAD": "C:USDCAD",
+    "AUD/USD": "C:AUDUSD",
+    "NZD/USD": "C:NZDUSD",
+    "XAU/USD": "C:XAUUSD"
+}
+
+# Fonction pour récupérer les données quotidiennes
+@st.cache_data(ttl=3600, show_spinner="Récupération des données...")
+def get_daily_forex_data(pair, days=30):
+    if not st.session_state.POLYGON_API_KEY:
+        st.error("Veuillez entrer une clé API valide")
+        return None
+    
+    end_date = datetime.now(timezone.utc)
+    start_date = end_date - timedelta(days=days)
+    
+    url = f"https://api.polygon.io/v2/aggs/ticker/{pair}/range/1/day/{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}?adjusted=true&sort=asc&apiKey={st.session_state.POLYGON_API_KEY}"
+    
     try:
         response = requests.get(url)
-        response.raise_for_status()
         data = response.json()
-        results = data.get("results", [])
-        if not results:
+        
+        if response.status_code != 200:
+            st.error(f"Erreur {data.get('status')}: {data.get('error', 'Unknown error')}")
             return None
-        df = pd.DataFrame(results)
-        df["t"] = pd.to_datetime(df["t"], unit="ms")
-        df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close"})
-        df = df[["t", "open", "high", "low", "close"]]
-        return df[::-1].reset_index(drop=True)
+            
+        if data.get('resultsCount', 0) == 0:
+            st.warning("Aucune donnée disponible pour cette période")
+            return None
+            
+        df = pd.DataFrame(data['results'])
+        df['date'] = pd.to_datetime(df['t'], unit='ms').dt.tz_localize('UTC')
+        df = df.rename(columns={
+            'o': 'Open',
+            'h': 'High', 
+            'l': 'Low',
+            'c': 'Close',
+            'v': 'Volume'
+        })
+        
+        return df[['date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+        
     except Exception as e:
-        st.error(f"Erreur récupération {pair}: {e}")
+        st.error(f"Erreur lors de la récupération des données: {str(e)}")
         return None
 
-def calculate_confluence(df):
+# Fonction pour calculer les indicateurs techniques
+def calculate_technical_indicators(df):
     try:
-        df["ema_20"] = df["close"].ewm(span=20).mean()
-        df["ema_50"] = df["close"].ewm(span=50).mean()
-        df["signal"] = 0
-        df.loc[df["ema_20"] > df["ema_50"], "signal"] += 1
-        df.loc[df["close"] > df["ema_20"], "signal"] += 1
-        df.loc[df["close"] > df["ema_50"], "signal"] += 1
-        df["confluence"] = df["signal"]
-        return df.iloc[-1]["confluence"]
+        df['SMA_20'] = df['Close'].rolling(window=20).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
+        df['RSI'] = compute_rsi(df['Close'], 14)
+        return df
     except Exception as e:
-        st.error(f"Erreur calcul confluence : {e}")
-        return 0
+        st.error(f"Erreur dans les calculs: {str(e)}")
+        return df
 
-# Interface utilisateur
-st.set_page_config(page_title="Scanner Confluence Forex Premium (Polygon.io)", layout="wide")
-st.title("🔍 Scanner Confluence Forex Premium (Polygon.io)")
-st.markdown("_Version adaptée pour Polygon.io_")
+# Calcul du RSI
+def compute_rsi(series, window=14):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    
+    avg_gain = gain.rolling(window).mean()
+    avg_loss = loss.rolling(window).mean()
+    
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-st.sidebar.header("🔧 Paramètres")
-min_conf = st.sidebar.selectbox("Confluence minimum (0-6)", list(range(7)), index=3)
-show_all = st.sidebar.checkbox("Voir toutes les paires (ignorer filtre confluence)", value=False)
-
-results = []
-
-with st.spinner("🔄 Scan en cours..."):
-    for pair in FOREX_PAIRS:
-        df = get_h1_data(pair, POLYGON_API_KEY)
-        if df is None:
-            continue
-        score = calculate_confluence(df)
-        if score >= min_conf or show_all:
-            results.append({
-                "Paire": pair.replace("C:", ""),
-                "Confluence H1": int(score)
-            })
-
-df_result = pd.DataFrame(results).sort_values(by="Confluence H1", ascending=False)
-
-if df_result.empty:
-    st.warning("Aucune paire ne correspond aux critères de confluence.")
+# Interface principale
+if st.session_state.POLYGON_API_KEY:
+    selected_pair = st.selectbox(
+        "Sélectionnez une paire Forex:",
+        options=list(FOREX_PAIRS.keys())
+    
+    days_to_fetch = st.slider(
+        "Nombre de jours à analyser:",
+        min_value=5,
+        max_value=365,
+        value=90)
+    
+    if st.button("Analyser"):
+        with st.spinner(f"Récupération des données pour {selected_pair}..."):
+            pair_code = FOREX_PAIRS[selected_pair]
+            df = get_daily_forex_data(pair_code, days_to_fetch)
+            
+            if df is not None:
+                df = calculate_technical_indicators(df)
+                
+                # Affichage des données
+                st.subheader(f"Dernières données pour {selected_pair}")
+                st.dataframe(df.tail(10), use_container_width=True)
+                
+                # Graphique des prix
+                st.subheader("Évolution des prix")
+                st.line_chart(df.set_index('date')[['Close', 'SMA_20', 'SMA_50']])
+                
+                # Graphique RSI
+                st.subheader("Indicateur RSI (14 jours)")
+                st.line_chart(df.set_index('date')['RSI'])
+                
+                # Dernière valeur
+                last_close = df.iloc[-1]['Close']
+                prev_close = df.iloc[-2]['Close']
+                change_pct = ((last_close - prev_close) / prev_close) * 100
+                
+                st.metric(
+                    label=f"Dernier cours {selected_pair}",
+                    value=f"{last_close:.5f}",
+                    delta=f"{change_pct:.2f}%"
+                )
 else:
-    st.success(f"{len(df_result)} paires trouvées.")
-    st.dataframe(df_result, use_container_width=True)
+    st.warning("Veuillez entrer votre clé API Polygon.io dans la sidebar")
+
+# Pied de page
+st.markdown("---")
+st.markdown("""
+**Remarques:**
+- Les données peuvent être retardées de 15 minutes sur les plans gratuits
+- Limite de 5 requêtes/minute sur le plan Basic
+- Les données intraday ne sont pas disponibles avec ce plan
+""")
